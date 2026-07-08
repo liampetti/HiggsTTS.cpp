@@ -69,10 +69,40 @@ static bool pch_is_space(const std::string & ch) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
-static bool pch_is_letter(const std::string & ch) {
-    if (ch.size() > 1) return true;           // multi-byte UTF-8 ≈ letter
+// Decode a single UTF-8 character to a Unicode code point.
+static uint32_t decode_utf8_cp(const std::string & ch) {
+    if (ch.empty()) return 0;
     unsigned char c = (unsigned char)ch[0];
-    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+    if (c < 0x80) return c;
+    size_t len;
+    uint32_t cp;
+    if ((c & 0xE0) == 0xC0)      { cp = c & 0x1F; len = 2; }
+    else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; len = 3; }
+    else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; len = 4; }
+    else return 0xFFFD;
+    if (ch.size() < len) return 0xFFFD;
+    for (size_t i = 1; i < len; i++)
+        cp = (cp << 6) | ((unsigned char)ch[i] & 0x3F);
+    return cp;
+}
+
+// Check if a code point is CJK / fullwidth punctuation (not a letter).
+static bool cp_is_cjk_punct(uint32_t cp) {
+    return (cp >= 0x3000 && cp <= 0x303F)   // CJK Symbols (。、 etc.)
+        || (cp >= 0xFF01 && cp <= 0xFF0F)   // Fullwidth ! through /
+        || (cp >= 0xFF1A && cp <= 0xFF20)   // Fullwidth : through @
+        || (cp >= 0xFF3B && cp <= 0xFF40)   // Fullwidth [ through `
+        || (cp >= 0xFF5B && cp <= 0xFF5E)   // Fullwidth { through ~
+        || (cp >= 0xFF61 && cp <= 0xFF65);  // Halfwidth ｡ through ･
+}
+
+static bool pch_is_letter(const std::string & ch) {
+    if (ch.size() == 1) {
+        unsigned char c = (unsigned char)ch[0];
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+    }
+    // multi-byte UTF-8: exclude CJK punctuation ranges, treat rest as letter
+    return !cp_is_cjk_punct(decode_utf8_cp(ch));
 }
 
 static bool pch_is_digit(const std::string & ch) {

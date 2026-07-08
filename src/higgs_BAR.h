@@ -23,7 +23,7 @@ std::vector<int32_t> higgs_build_prompt(
 // ── Backbone AR ───────────────────────────────────────────────────────────────
 
 /// Trim trailing silence from PCM (default -60 dBFS threshold).
-void higgs_trim_trailing_silence(std::vector<float>& pcm, float db_threshold = -60.0f);
+void higgs_trim_trailing_silence(std::vector<float>& pcm, float db_threshold = -100.0f);
 
 /// Backbone AR: prefill 36L + autoregressive decode loop → raw RVQ codes.
 /// Returns false on alloc/compute failure.
