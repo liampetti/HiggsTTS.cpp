@@ -173,7 +173,9 @@ bool higgs_backbone_ar(higgs_test_model* m, const int32_t* codes, int T_frames,
     auto delayed = higgs_apply_delay_pattern(codes, T_frames, N);
     int L_audio = T_frames + N - 1;
     int L = L_prompt;
-    int max_steps = 500;
+    // estimate text token count from prompt minus audio placeholders and specials
+    int n_text = std::max(1, L_prompt - L_audio - 5);
+    int max_steps = n_text * 12 + 200;
 
     // ── Allocate KV cache ───────────────────────────────────────────────────
     int max_ctx = L_prompt + max_steps + 10;
