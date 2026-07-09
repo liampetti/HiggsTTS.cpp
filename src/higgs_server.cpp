@@ -33,6 +33,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <clocale>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -268,6 +269,8 @@ static std::vector<std::string> get_utf8_argv() {
 // ── main ────────────────────────────────────────────────────────────────────
 int main(int argc, char** argv) {
 #ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    setlocale(LC_ALL, ".UTF-8");
     auto utf8_args = get_utf8_argv();
     int nargs = (int)utf8_args.size();
     std::vector<const char*> cargs(nargs);

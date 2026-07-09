@@ -50,6 +50,18 @@ higgs_server --model model.gguf --ref-wav ref.wav --ref-text "reference transcri
 when they appear in the prompt text. Without it, the model falls back to the built-in
 GGUF BPE tokenizer.
 
+## GUI
+
+A simple TTS GUI is provided in [usage_example/simple_tts_gui.py](usage_example/simple_tts_gui.py).
+
+```bash
+pip install pyqt6 numpy sounddevice
+python usage_example/simple_tts_gui.py
+```
+
+Configure model path + reference audio in Model Config, launch the server, then type or paste
+text and click Synthesize. The Tag dropdown gives quick access to all emotion / style / prosody tokens.
+
 ### Special Token Reference
 
 See [PROMPTING.md](https://huggingface.co/bosonai/higgs-tts-3-4b/blob/main/PROMPTING.md) for full details.
