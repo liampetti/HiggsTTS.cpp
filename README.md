@@ -4,15 +4,24 @@ ggml port of [bosonai/higgs-tts-3-4b](https://huggingface.co/bosonai/higgs-tts-3
 
 See [LICENSE-HIGGS](LICENSE-HIGGS).
 
-## Build (HIP backend for example)
+## Build
+
+Personally I recommend Vulkan — it's fast and supports all platforms.
+CUDA and HIP work too.
 
 ```bash
-cd HiggsTTS.cpp
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON -DHIP_PLATFORM=amd
-cmake --build build
-```
+# Vulkan (recommended)
+cmake -B build-vk -DGGML_VULKAN=ON
+cmake --build build-vk --config Release -j
 
-Output: `build/bin/higgs_cli.exe`, `higgs_server.exe`, `higgs_quantize.exe`
+# CUDA
+cmake -B build-cu -DGGML_CUDA=ON
+cmake --build build-cu --config Release -j
+
+# HIP (AMD)
+cmake -B build-hip -DGGML_HIP=ON -DHIP_PLATFORM=amd
+cmake --build build-hip --config Release -j
+```
 
 ## Model
 
