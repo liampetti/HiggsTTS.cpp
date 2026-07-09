@@ -137,7 +137,7 @@ int main(int argc, char** argv) {
             seed = atoi(argv[++i]);
     }
     if (!model_path || !ref_wav) {
-        fprintf(stderr, "Usage: higgs_BAR_test --model <gguf> --ref-wav <wav> [--text <str>] [--ref-text <str>] [--temperature <f>] [--seed <n>] [--out <wav>]\n");
+        fprintf(stderr, "Usage: higgs_BAR_test --model <gguf> --ref-wav <wav> [--text <str>] [--ref-text <str>] [--tokenizer <json>] [--temperature <f>] [--seed <n>] [--out <wav>]\n");
         return 1;
     }
 

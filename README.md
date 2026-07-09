@@ -26,6 +26,17 @@ or you can convert the model yourself, see [here](https://github.com/Rafa00127/H
 # CLI: WAV → WAV
 higgs_cli --model model.gguf --ref-wav ref.wav --text "Hello world" --out out.wav
 
+# CLI with emotion tags (optional, requires tokenizer.json)
+higgs_cli --model model.gguf --ref-wav ref.wav --text "Hello world" --tokenizer tokenizer.json --out out.wav
+
 # Server
 higgs_server --model model.gguf --ref-wav ref.wav --ref-text "reference transcript" --port 9989
+
+# Server with emotion tags (optional, requires tokenizer.json)
+higgs_server --model model.gguf --ref-wav ref.wav --ref-text "reference transcript" --tokenizer tokenizer.json --port 9989
 ```
+
+`--tokenizer` is optional. It enables recognition of special emotion / style / prosody tags
+(e.g. `<|emotion:elation|>`, `<|style:whispering|>`, `<|prosody:speed_fast|>`)
+when they appear in the prompt text. Without it, the model falls back to the built-in
+GGUF BPE tokenizer.

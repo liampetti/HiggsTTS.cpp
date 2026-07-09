@@ -292,7 +292,7 @@ int main(int argc, char** argv) {
             g_port = atoi(argv[++i]);
     }
     if (!g_model_path || !g_ref_wav) {
-        fprintf(stderr, "Usage: higgs_server --model <gguf> --ref-wav <wav> [--ref-text <str>] [--temperature <f>] [--seed <n>] [--port <n>]\n");
+        fprintf(stderr, "Usage: higgs_server --model <gguf> --ref-wav <wav> [--ref-text <str>] [--tokenizer <json>] [--temperature <f>] [--seed <n>] [--port <n>]\n");
         return 1;
     }
 
