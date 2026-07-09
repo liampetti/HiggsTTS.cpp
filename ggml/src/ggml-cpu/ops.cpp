@@ -6208,7 +6208,7 @@ void ggml_compute_forward_im2col_rafa(const ggml_compute_params* params, ggml_te
     const int T_out = (int)dst->ne[1];
     const int CK = C * K;
 
-    const float* __restrict__ x = (const float*)src->data;
+    const float*  x = (const float*)src->data;
 
     const int ith = params->ith;
     const int nth = params->nth;
@@ -6218,7 +6218,7 @@ void ggml_compute_forward_im2col_rafa(const ggml_compute_params* params, ggml_te
     const int t1 = ((int64_t)T_out * (ith + 1)) / nth;
 
     if (dst->type == GGML_TYPE_F16) {
-        ggml_fp16_t* __restrict__ y = (ggml_fp16_t*)dst->data;
+        ggml_fp16_t*  y = (ggml_fp16_t*)dst->data;
         for (int t = t0; t < t1; t++) {
             for (int ic_k = 0; ic_k < CK; ic_k++) {
                 const int ic = ic_k / K;
@@ -6230,7 +6230,7 @@ void ggml_compute_forward_im2col_rafa(const ggml_compute_params* params, ggml_te
             }
         }
     } else {
-        float* __restrict__ y = (float*)dst->data;
+        float*  y = (float*)dst->data;
         for (int t = t0; t < t1; t++) {
             for (int ic_k = 0; ic_k < CK; ic_k++) {
                 const int ic = ic_k / K;
@@ -6261,9 +6261,9 @@ void ggml_compute_forward_snake_1d(const ggml_compute_params* params, ggml_tenso
     const int C = (int)x->ne[1];
     const int n = C * T;
 
-    const float* __restrict__ x_data = (const float*)x->data;
-    const float* __restrict__ a_data = (const float*)alpha->data;
-    float* __restrict__ y_data = (float*)dst->data;
+    const float*  x_data = (const float*)x->data;
+    const float*  a_data = (const float*)alpha->data;
+    float*  y_data = (float*)dst->data;
 
     const int ith = params->ith;
     const int nth = params->nth;

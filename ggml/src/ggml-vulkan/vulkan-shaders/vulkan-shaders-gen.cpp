@@ -974,6 +974,11 @@ void process_shaders() {
 
     string_to_spv("col2im_1d_f32", "col2im_1d.comp", {{"A_TYPE", "float"}, {"D_TYPE", "float"}});
 
+    string_to_spv("im2col_rafa_f32", "im2col_rafa.comp", {{"A_TYPE", "float"}, {"D_TYPE", "float"}});
+    string_to_spv("im2col_rafa_f32_f16", "im2col_rafa.comp", {{"A_TYPE", "float"}, {"D_TYPE", "float16_t"}});
+
+    string_to_spv("snake_1d_f32", "snake_1d.comp", {{"A_TYPE", "float"}, {"B_TYPE", "float"}, {"D_TYPE", "float"}});
+
     string_to_spv("pool2d_f32", "pool2d.comp", merge_maps(base_dict, {{"A_TYPE", "float"}, {"D_TYPE", "float"}}));
 
     string_to_spv("rwkv_wkv6_f32", "wkv6.comp", merge_maps(base_dict, {{"A_TYPE", "float"}}));

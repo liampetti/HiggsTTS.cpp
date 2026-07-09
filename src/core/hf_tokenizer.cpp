@@ -88,12 +88,12 @@ static uint32_t decode_utf8_cp(const std::string & ch) {
 
 // Check if a code point is CJK / fullwidth punctuation (not a letter).
 static bool cp_is_cjk_punct(uint32_t cp) {
-    return (cp >= 0x3000 && cp <= 0x303F)   // CJK Symbols (。、 etc.)
-        || (cp >= 0xFF01 && cp <= 0xFF0F)   // Fullwidth ! through /
-        || (cp >= 0xFF1A && cp <= 0xFF20)   // Fullwidth : through @
-        || (cp >= 0xFF3B && cp <= 0xFF40)   // Fullwidth [ through `
-        || (cp >= 0xFF5B && cp <= 0xFF5E)   // Fullwidth { through ~
-        || (cp >= 0xFF61 && cp <= 0xFF65);  // Halfwidth ｡ through ･
+    return (cp >= 0x3000 && cp <= 0x303F)   // CJK Symbols and Punctuation
+        || (cp >= 0xFF01 && cp <= 0xFF0F)   // Fullwidth !../
+        || (cp >= 0xFF1A && cp <= 0xFF20)   // Fullwidth :..@
+        || (cp >= 0xFF3B && cp <= 0xFF40)   // Fullwidth [..`
+        || (cp >= 0xFF5B && cp <= 0xFF5E)   // Fullwidth {..~
+        || (cp >= 0xFF61 && cp <= 0xFF65);  // Halfwidth punctuation
 }
 
 static bool pch_is_letter(const std::string & ch) {
