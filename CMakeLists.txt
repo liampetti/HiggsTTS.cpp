@@ -61,6 +61,16 @@ if(NOT MSVC)
     target_compile_options(higgs_server PRIVATE -O3)
 endif()
 
+# ── tokenizer_helper ─────────────────────────────────────────────────────────
+add_executable(tokenizer_helper src/tokenizer_helper.cpp src/dr_wav.h)
+target_compile_definitions(tokenizer_helper PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_include_directories(tokenizer_helper PRIVATE src)
+target_compile_features(tokenizer_helper PRIVATE cxx_std_17)
+target_link_libraries(tokenizer_helper PRIVATE higgs_tts)
+if(NOT MSVC)
+    target_compile_options(tokenizer_helper PRIVATE -O3)
+endif()
+
 # ── higgs_quantize ──────────────────────────────────────────────────────────
 add_executable(higgs_quantize
     tools/higgs_quantize/main.cpp
