@@ -1,11 +1,15 @@
 using System.Diagnostics;
 using System.IO;
-using System.Media;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Higgs.net;
+using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 
 namespace HiggsTTSGUI
 {
@@ -19,6 +23,12 @@ namespace HiggsTTSGUI
         private string? _modelPath;
         private bool _busy;
         private bool _inputTouched;
+
+        // ── Playback ──
+        private WaveOutEvent? _player;
+        private PcmMemoryProvider? _pcmProvider;
+        private DispatcherTimer? _playTimer;
+        private bool _seeking;
 
         private const string PlaceholderText = "Enter text to synthesize here...";
 
@@ -74,6 +84,19 @@ namespace HiggsTTSGUI
             ("  Expressive High", "<|prosody:expressive_high|>"),
             ("  Expressive Low",  "<|prosody:expressive_low|>"),
         };
+
+        // ── Dark title bar via DWM ──────────────────────────────────────
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int val, int size);
+
+        private void Window_SourceInitialized(object? sender, EventArgs e)
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            int useDark = 1;
+            // DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Win10 20H1+), fallback 19
+            if (DwmSetWindowAttribute(hwnd, 20, ref useDark, 4) != 0)
+                DwmSetWindowAttribute(hwnd, 19, ref useDark, 4);
+        }
 
         public MainWindow()
         {
@@ -200,6 +223,7 @@ namespace HiggsTTSGUI
             BtnUnload.IsEnabled = false;
             BtnSynth.IsEnabled = false;
             BtnPlay.IsEnabled = false;
+            BtnStop.IsEnabled = false;
             BtnSave.IsEnabled = false;
             LblStatus.Text = "Model unloaded.";
         }
@@ -303,8 +327,10 @@ namespace HiggsTTSGUI
             _busy = true;
             BtnSynth.IsEnabled = false;
             BtnPlay.IsEnabled = false;
+            BtnStop.IsEnabled = false;
             BtnSave.IsEnabled = false;
             _pcm = null;
+            StopPlayback();
 
             var refWav   = TxtRefWav.Text.Trim();
             var refText  = TxtRefText.Text.Trim();
@@ -408,6 +434,7 @@ namespace HiggsTTSGUI
                         _busy = false;
                         BtnSynth.Content = "Synthesize";
                         BtnPlay.IsEnabled = _pcm != null;
+                        BtnStop.IsEnabled = _pcm != null;
                         BtnSave.IsEnabled = _pcm != null;
                         EnableSynthIfReady();
                     });
@@ -415,22 +442,120 @@ namespace HiggsTTSGUI
             });
         }
 
-        // ── Play ──────────────────────────────────────────────────────────
+        // ── Play / Pause / Stop ────────────────────────────────────────────
 
-        private void Play_Click(object sender, RoutedEventArgs e)
+        private void PlayPause_Click(object sender, RoutedEventArgs e)
         {
             if (_pcm == null) return;
             try
             {
-                var wavBytes = PcmToWavBytes(_pcm, 24000);
-                using var ms = new MemoryStream(wavBytes);
-                using var player = new SoundPlayer(ms);
-                player.Play();
+                if (_player != null && _player.PlaybackState == PlaybackState.Playing)
+                {
+                    // Pause
+                    _player.Pause();
+                    _playTimer?.Stop();
+                    BtnPlay.Content = "▶";
+                }
+                else if (_player != null && _player.PlaybackState == PlaybackState.Paused)
+                {
+                    // Resume
+                    _player.Play();
+                    _playTimer?.Start();
+                    BtnPlay.Content = "⏸";
+                }
+                else
+                {
+                    // Start new playback
+                    StopPlayback();
+
+                    _pcmProvider = new PcmMemoryProvider(_pcm, 24000);
+                    _player = new WaveOutEvent();
+                    _player.PlaybackStopped += (_, _) => Dispatcher.Invoke(OnPlaybackEnded);
+                    _player.Init(_pcmProvider);
+                    _player.Play();
+
+                    _playTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+                    _playTimer.Tick += PlayTimer_Tick;
+                    _playTimer.Start();
+
+                    BtnPlay.Content = "⏸";
+                    BtnStop.IsEnabled = true;
+                    SldPosition.IsEnabled = true;
+                }
             }
             catch (Exception ex)
             {
                 LblInfo.Content = $"Playback error: {ex.Message}";
+                StopPlayback();
             }
+        }
+
+        private void Stop_Click(object sender, RoutedEventArgs e)
+        {
+            StopPlayback();
+        }
+
+        private void StopPlayback()
+        {
+            _player?.Stop();
+            _player?.Dispose();
+            _player = null;
+            _pcmProvider = null;
+            _playTimer?.Stop();
+            _playTimer = null;
+            BtnPlay.Content = "▶";
+            BtnStop.IsEnabled = _pcm != null;
+            SldPosition.IsEnabled = false;
+            SldPosition.Value = 0;
+            LblTime.Text = FormatTime(0) + " / " + FormatTime(_pcm?.Length / 24000f ?? 0);
+        }
+
+        private void OnPlaybackEnded()
+        {
+            _playTimer?.Stop();
+            BtnPlay.Content = "▶";
+            BtnStop.IsEnabled = _pcm != null;
+            SldPosition.Value = 0;
+            SldPosition.IsEnabled = false;
+            _player?.Dispose();
+            _player = null;
+            _pcmProvider = null;
+        }
+
+        private void PlayTimer_Tick(object? sender, EventArgs e)
+        {
+            if (_pcmProvider == null || _seeking) return;
+            double sec = _pcmProvider.CurrentTime;
+            double total = _pcmProvider.TotalTime;
+            if (total > 0)
+                SldPosition.Value = sec / total;
+            LblTime.Text = FormatTime(sec) + " / " + FormatTime(total);
+        }
+
+        // ── Seek ───────────────────────────────────────────────────────────
+
+        private void SldPosition_PreviewMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            _seeking = true;
+            _player?.Pause();
+        }
+
+        private void SldPosition_PreviewMouseUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            _seeking = false;
+            if (_pcmProvider == null) return;
+            double frac = SldPosition.Value;
+            _pcmProvider.Seek((long)(frac * _pcmProvider.Length));
+            if (_player != null && _player.PlaybackState == PlaybackState.Paused)
+                _player.Play();
+        }
+
+        private void SldPosition_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (!_seeking || _pcmProvider == null) return;
+            double frac = SldPosition.Value;
+            double sec = frac * _pcmProvider.TotalTime;
+            LblTime.Text = FormatTime(sec) + " / " + FormatTime(_pcmProvider.TotalTime);
         }
 
         // ── Save ──────────────────────────────────────────────────────────
@@ -540,6 +665,13 @@ namespace HiggsTTSGUI
             return dst;
         }
 
+        private static string FormatTime(double seconds)
+        {
+            int m = (int)(seconds / 60);
+            int s = (int)(seconds % 60);
+            return $"{m}:{s:D2}";
+        }
+
         private static byte[] PcmToWavBytes(float[] pcm, int sampleRate)
         {
             int dataSize = pcm.Length * 2; // 16-bit
@@ -577,9 +709,48 @@ namespace HiggsTTSGUI
 
         protected override void OnClosed(EventArgs e)
         {
+            StopPlayback();
             SaveConfig();
             _tts?.Dispose();
             base.OnClosed(e);
+        }
+    }
+
+    /// <summary>Streams float[] PCM as 16-bit WAV to NAudio WaveOut.</summary>
+    internal sealed class PcmMemoryProvider : IWaveProvider
+    {
+        private readonly float[] _pcm;
+        private int _pos;
+
+        public PcmMemoryProvider(float[] pcm, int sampleRate)
+        {
+            _pcm = pcm;
+            WaveFormat = new WaveFormat(sampleRate, 16, 1);
+        }
+
+        public WaveFormat WaveFormat { get; }
+
+        public long Length => _pcm.Length;
+        public float CurrentTime => _pos / (float)WaveFormat.SampleRate;
+        public float TotalTime => _pcm.Length / (float)WaveFormat.SampleRate;
+
+        public void Seek(long samplePos)
+        {
+            _pos = (int)Math.Clamp(samplePos, 0, _pcm.Length);
+        }
+
+        public int Read(byte[] buffer, int offset, int count)
+        {
+            int samples = Math.Min(count / 2, _pcm.Length - _pos);
+            for (int i = 0; i < samples; i++)
+            {
+                float v = Math.Clamp(_pcm[_pos + i], -1f, 1f);
+                short s = (short)(v * 32767);
+                buffer[offset + i * 2] = (byte)(s & 0xFF);
+                buffer[offset + i * 2 + 1] = (byte)((s >> 8) & 0xFF);
+            }
+            _pos += samples;
+            return samples * 2;
         }
     }
 }

@@ -28,9 +28,7 @@ CLAUDE.md
 
 #test
 test_area
-
-#config file for test
-usage_example/*.json
+python_gui/*.json
 
 *.wav
 

@@ -3,7 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Higgs TTS" Height="680" Width="760"
         Background="#1e1e1e" Foreground="#ddd"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        SourceInitialized="Window_SourceInitialized">
     <Window.Resources>
         <!-- Dark theme styles -->
         <Style TargetType="TextBox">
@@ -25,14 +26,27 @@
             <Setter Property="FontSize" Value="13"/>
             <Setter Property="FontFamily" Value="Segoe UI"/>
             <Setter Property="Cursor" Value="Hand"/>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#3a3a3a"/>
-                </Trigger>
-                <Trigger Property="IsEnabled" Value="False">
-                    <Setter Property="Opacity" Value="0.5"/>
-                </Trigger>
-            </Style.Triggers>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="5"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#3a3a3a"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style TargetType="Label">
             <Setter Property="Foreground" Value="#ddd"/>
@@ -263,15 +277,41 @@
                          TextAlignment="Center" VerticalAlignment="Center"/>
             </Grid>
 
-            <!-- Play / Save -->
-            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                <Button x:Name="BtnPlay" Content="Play" Click="Play_Click" IsEnabled="False"
-                        Width="80" Padding="10,5"/>
-                <Button x:Name="BtnSave" Content="Save WAV" Click="Save_Click" IsEnabled="False"
-                        Width="80" Margin="8,0,0,0" Padding="10,5"/>
-                <Label x:Name="LblInfo" Content="" Margin="16,0,0,0" VerticalAlignment="Center"
-                       FontSize="12"/>
-            </StackPanel>
+            <!-- Playback bar -->
+            <Grid Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <Button x:Name="BtnPlay" Grid.Column="0" Content="▶" Click="PlayPause_Click"
+                        IsEnabled="False" Width="36" Height="36" Padding="0"
+                        FontSize="14" FontWeight="Bold"/>
+
+                <Button x:Name="BtnStop" Grid.Column="1" Content="■" Click="Stop_Click"
+                        IsEnabled="False" Width="36" Height="36" Padding="0"
+                        Margin="6,0,0,0" FontSize="14"/>
+
+                <TextBlock x:Name="LblTime" Grid.Column="2" Text="0:00 / 0:00"
+                           Margin="12,0" VerticalAlignment="Center" FontSize="12"
+                           MinWidth="80"/>
+
+                <Slider x:Name="SldPosition" Grid.Column="3" Minimum="0" Maximum="1" Value="0"
+                        IsEnabled="False" VerticalAlignment="Center"
+                        PreviewMouseDown="SldPosition_PreviewMouseDown"
+                        PreviewMouseUp="SldPosition_PreviewMouseUp"
+                        ValueChanged="SldPosition_ValueChanged"
+                        Margin="4,0"/>
+
+                <Button x:Name="BtnSave" Grid.Column="4" Content="Save WAV" Click="Save_Click"
+                        IsEnabled="False" Width="80" Margin="12,0,0,0" Padding="10,5"/>
+            </Grid>
+
+            <Label x:Name="LblInfo" Content="" Margin="0,4,0,0" VerticalAlignment="Center"
+                   FontSize="12"/>
         </StackPanel>
 
     </Grid>
