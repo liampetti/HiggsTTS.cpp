@@ -159,9 +159,10 @@ void higgs_trim_trailing_silence(std::vector<float>& pcm, float db_threshold) {
 
 // ── higgs_backbone_ar ─────────────────────────────────────────────────────────
 bool higgs_backbone_ar(higgs_test_model* m, const int32_t* codes, int T_frames,
-                        const int32_t* prompt_ids, int L_prompt,
-                        float temperature, int seed,
-                        std::vector<int32_t>& raw_codes, int& T_raw) {
+                       const int32_t* prompt_ids, int L_prompt,
+                       float temperature, int seed, int max_actions,
+                       std::vector<int32_t>& raw_codes, int& T_raw,
+                        bool (*on_frame)(const int32_t *, void *), void * on_frame_user) {
     if (!m || !codes || !prompt_ids || T_frames < 1 || L_prompt < 1) return false;
 
     const int N = 8, Vcb = 1026, D = 2560;
@@ -176,6 +177,7 @@ bool higgs_backbone_ar(higgs_test_model* m, const int32_t* codes, int T_frames,
     // estimate text token count from prompt minus audio placeholders and specials
     int n_text = std::max(1, L_prompt - L_audio - 5);
     int max_steps = n_text * 12 + 200;
+    if (max_actions > 0) max_steps = std::min(max_steps, max_actions);
 
     // ── Allocate KV cache ───────────────────────────────────────────────────
     int max_ctx = L_prompt + max_steps + 10;
@@ -301,6 +303,20 @@ bool higgs_backbone_ar(higgs_test_model* m, const int32_t* codes, int T_frames,
             eoc_countdown = N - 2;
         }
         all_codes.push_back(codes_n);
+        // A raw frame is complete once every delayed codebook value is known.
+        // Emit it here so the server can decode stable windows before AR ends.
+        if (on_frame && (int)all_codes.size() >= N) {
+            const int t = (int)all_codes.size() - N;
+            int32_t frame[N];
+            for (int c = 0; c < N; c++) {
+                frame[c] = all_codes[t + c][c];
+            }
+            if (!on_frame(frame, on_frame_user)) {
+                ggml_backend_buffer_free(kv_buf);
+                ggml_free(kv_ctx);
+                return false;
+            }
+        }
         if (eoc_countdown == 0) break;
 
         // Build step graph
@@ -365,7 +381,11 @@ bool higgs_backbone_ar(higgs_test_model* m, const int32_t* codes, int T_frames,
     // ── Reverse delay pattern ───────────────────────────────────────────────
     int T_produced = (int)all_codes.size();
     T_raw = T_produced - N + 1;
-    if (T_raw < 1) T_raw = 1;
+    if (T_raw < 1) {
+        ggml_backend_buffer_free(kv_buf);
+        ggml_free(kv_ctx);
+        return false;
+    }
     raw_codes.resize(T_raw * N);
     for (int t = 0; t < T_raw; t++)
         for (int c = 0; c < N; c++)

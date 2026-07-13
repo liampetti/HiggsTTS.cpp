@@ -201,7 +201,7 @@ int main(int argc, char** argv) {
     std::vector<int32_t> raw_codes;
     int T_raw = 0;
     if (!higgs_backbone_ar(&m, codes.data(), T_frames, prompt_ids.data(), (int)prompt_ids.size(),
-                            temperature, seed, raw_codes, T_raw)) {
+                             temperature, seed, 0, raw_codes, T_raw)) {
         fprintf(stderr, "Backbone AR failed\n");
         higgs_test_free(&m); return 1;
     }

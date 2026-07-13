@@ -35,5 +35,8 @@ bool higgs_backbone_ar(
     int              L_prompt,      // prompt length
     float            temperature,   // sampling temperature
     int              seed,          // random seed (for reproducibility)
+    int              max_actions,   // cap AR steps and KV-cache allocation; 0 uses default
     std::vector<int32_t> & raw_codes, // output raw codes [T_raw*8] t-major
-    int            & T_raw);        // output code frames
+    int            & T_raw,          // output code frames
+    bool (*on_frame)(const int32_t *, void *) = nullptr,
+    void * on_frame_user = nullptr);

@@ -38,12 +38,29 @@ higgs_cli --model higgs-v3-tts.gguf --ref-wav ref.wav --text "Hello world" --out
 # CLI with emotion tags (optional, requires tokenizer.json)
 higgs_cli --model higgs-v3-tts.gguf --ref-wav ref.wav --text "Hello world" --tokenizer tokenizer.json --out out.wav
 
-# Simple TCP server: accepts text + temperature → returns float32 PCM
+# Simple TCP server: accepts text + temperature → streams float32 PCM
 higgs_server --model higgs-v3-tts.gguf --ref-wav ref.wav --ref-text "reference transcript" --port 9989
 
 # Server with emotion tags (optional, requires tokenizer.json)
 higgs_server --model higgs-v3-tts.gguf --ref-wav ref.wav --ref-text "reference transcript" --tokenizer tokenizer.json --port 9989
 ```
+
+### TCP protocol
+
+The client sends a 4-byte big-endian UTF-8 byte length, a 4-byte big-endian
+IEEE-754 temperature, then the UTF-8 text. The server responds with frames:
+
+| Type | Payload |
+|------|---------|
+| `1` | Float32 little-endian PCM at 24 kHz |
+| `2` | Empty end-of-stream marker |
+| `3` | UTF-8 error text |
+
+Each response frame is `type:u8 + payload_bytes:u32be + payload`. PCM arrives
+incrementally as stable codec windows are decoded. The server keeps a short
+final tail until generation ends, then trims trailing silence before sending it.
+`--max-actions` caps autoregressive decode and KV-cache allocation; use `0`
+(the default) for the model-derived limit, or a value of at least `8`.
 
 `--tokenizer` is optional. It enables recognition of special emotion / style / prosody tags
 (e.g. `<|style:whispering|>`)

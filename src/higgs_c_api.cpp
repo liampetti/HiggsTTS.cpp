@@ -97,7 +97,7 @@ HIGGS_API int higgs_tts_ar_generate(higgs_tts_handle* h,
     std::vector<int32_t> raw_codes;
     int T_raw = 0;
     if (!higgs_backbone_ar(&h->model, in_codes, T_in, prompt_ids.data(),
-                            (int)prompt_ids.size(), temperature, seed,
+                             (int)prompt_ids.size(), temperature, seed, 0,
                             raw_codes, T_raw))
         return -1;
 

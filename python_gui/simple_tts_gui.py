@@ -14,6 +14,9 @@ CONFIG = os.path.join(_FILE_DIR, "tts_gui_config.json")
 SAMPLE_RATE = 24000
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 9988
+FRAME_PCM = 1
+FRAME_END = 2
+FRAME_ERROR = 3
 
 QSS = """
 * { font-family: "Segoe UI", sans-serif; }
@@ -82,24 +85,39 @@ class TtsEngine:
         sock.sendall(struct.pack(">i", len(payload)))
         sock.sendall(struct.pack(">f", temperature))
         sock.sendall(payload)
-        hdr = cls._recvn(sock, 4)
-        if len(hdr) < 4:
-            sock.close()
-            raise RuntimeError("Server returned empty header")
-        n_samples = struct.unpack(">i", hdr)[0]
-        if n_samples <= 0:
-            sock.close()
-            raise RuntimeError(f"Server error: n_samples={n_samples}")
-        data = cls._recvn(sock, n_samples * 4)
+        chunks = []
+        while True:
+            hdr = cls._recvn(sock, 5)
+            if len(hdr) != 5:
+                sock.close()
+                raise RuntimeError("Server returned a truncated frame header")
+            frame_type, frame_bytes = struct.unpack(">BI", hdr)
+            data = cls._recvn(sock, frame_bytes)
+            if len(data) != frame_bytes:
+                sock.close()
+                raise RuntimeError("Server returned a truncated frame payload")
+            if frame_type == FRAME_PCM:
+                if frame_bytes == 0 or frame_bytes % 4:
+                    sock.close()
+                    raise RuntimeError("Server returned an invalid PCM frame")
+                chunks.append(data)
+            elif frame_type == FRAME_END:
+                if frame_bytes:
+                    sock.close()
+                    raise RuntimeError("Server returned an invalid end frame")
+                break
+            elif frame_type == FRAME_ERROR:
+                sock.close()
+                raise RuntimeError(f"Server error: {data.decode('utf-8', 'replace')}")
+            else:
+                sock.close()
+                raise RuntimeError(f"Server returned unknown frame type: {frame_type}")
         try:
             sock.shutdown(socket.SHUT_RD)
         except OSError:
             pass
         sock.close()
-        arr = np.frombuffer(data, dtype=np.float32).copy()
-        if len(arr) != n_samples:
-            raise RuntimeError(f"Truncated PCM: got {len(arr)}, expected {n_samples}")
-        return arr
+        return np.frombuffer(b"".join(chunks), dtype=np.float32).copy()
 
 
 # ======================== Model Config Dialog ========================

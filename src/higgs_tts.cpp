@@ -2,6 +2,8 @@
 
 #include "higgs_tts.h"
 
+#include <cmath>
+
 #include "core/gguf_loader.h"
 
 #include "ggml.h"

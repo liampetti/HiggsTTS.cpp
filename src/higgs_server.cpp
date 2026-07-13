@@ -1,7 +1,11 @@
 // higgs_server.cpp — TCP TTS server for Higgs TTS.
 // Prefill codes computed once per reference audio, reused for all requests.
-// Protocol: 4-byte text_len(BE) + 4-byte temperature(BE float) + UTF-8 text
-//           → 4-byte n_samples(BE) + float32 PCM @ 24kHz
+// Request: 4-byte text_len(BE) + 4-byte temperature(BE float) + UTF-8 text.
+// Response: framed stream, 1-byte type + 4-byte payload bytes (BE):
+//   1 = float32 PCM @ 24kHz, 2 = end, 3 = UTF-8 error.
+// PCM is decoded from overlapping RVQ windows. A 16-frame lookahead is
+// withheld for DAC context, followed by a 16-frame tail retained for final
+// trailing-silence trimming.
 
 #include "higgs_tts.h"
 #include "higgs_prefill.h"
@@ -24,11 +28,13 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 #define SOCKET int
 #define INVALID_SOCKET (-1)
 #define SOCKET_ERROR (-1)
 #define closesocket close
+#define SD_SEND SHUT_WR
 #endif
 
 #include <atomic>
@@ -38,6 +44,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <condition_variable>
 #include <string>
 #include <thread>
 #include <vector>
@@ -49,6 +56,7 @@ static const char*  g_ref_text      = nullptr;
 static float        g_temperature   = 0.9f;
 static int          g_seed          = 42;
 static int          g_port          = 9989;
+static int          g_max_actions   = 0;
 static const char*  g_tokenizer     = nullptr;
 static HFTokenizer  g_hf_tok;
 
@@ -62,6 +70,13 @@ static std::vector<int32_t>        g_prompt_ids;
 static int                         g_L_prompt = 0;
 static std::mutex                  g_mutex;
 static std::atomic<bool>           g_running{true};
+static const int kCodebooks = 8;
+static const int kSamplesPerFrame = 960;
+static const int kStreamLookaheadFrames = 16;
+static const int kStreamStepFrames = 16;
+static const int kTrailingSilenceHoldFrames = 16;
+static const size_t kMaxQueuedPcmFrames = 4;
+static const int kClientSendTimeoutMs = 2000;
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 static void die(const char* msg) {
@@ -72,11 +87,37 @@ static void die(const char* msg) {
 static bool send_all(SOCKET fd, const char* data, int len) {
     int sent = 0;
     while (sent < len) {
-        int n = send(fd, data + sent, len - sent, 0);
-        if (n == SOCKET_ERROR) return false;
+        int n = send(fd, data + sent, len - sent,
+#ifdef _WIN32
+                     0
+#else
+                     MSG_NOSIGNAL
+#endif
+        );
+        if (n <= 0) return false;
         sent += n;
     }
     return true;
+}
+
+static bool send_frame(SOCKET fd, uint8_t type, const void* data, uint32_t bytes) {
+    uint32_t bytes_be = htonl(bytes);
+    return send_all(fd, (const char*)&type, 1) &&
+           send_all(fd, (const char*)&bytes_be, 4) &&
+           (!bytes || send_all(fd, (const char*)data, (int)bytes));
+}
+
+static void configure_client_socket(SOCKET fd) {
+#ifdef _WIN32
+    DWORD timeout = kClientSendTimeoutMs;
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout, sizeof(timeout));
+#else
+    struct timeval timeout = {
+        kClientSendTimeoutMs / 1000,
+        (kClientSendTimeoutMs % 1000) * 1000,
+    };
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
 }
 
 static bool load_model() {
@@ -142,7 +183,98 @@ static bool prepare_prefill() {
 }
 
 // Per-request synthesis
-static bool synth_one(const char* text, float temperature, std::vector<float>& pcm) {
+struct stream_state {
+    SOCKET fd;
+    std::vector<int32_t> codes;
+    int decoded_frames = 0;
+    std::vector<float> pending_pcm;
+    std::vector<std::vector<float>> pcm_queue;
+    std::mutex queue_mutex;
+    std::condition_variable queue_ready;
+    std::thread writer;
+    bool producer_done = false;
+    bool send_failed = false;
+};
+
+static bool enqueue_pcm(stream_state* state, std::vector<float>&& pcm) {
+    if (pcm.empty()) return true;
+    std::lock_guard<std::mutex> lock(state->queue_mutex);
+    if (state->send_failed || state->pcm_queue.size() >= kMaxQueuedPcmFrames) {
+        state->send_failed = true;
+        return false;
+    }
+    state->pcm_queue.push_back(std::move(pcm));
+    state->queue_ready.notify_one();
+    return true;
+}
+
+static void stream_writer(stream_state* state) {
+    for (;;) {
+        std::vector<float> pcm;
+        {
+            std::unique_lock<std::mutex> lock(state->queue_mutex);
+            state->queue_ready.wait(lock, [&] {
+                return state->send_failed || state->producer_done || !state->pcm_queue.empty();
+            });
+            if (state->send_failed || (state->producer_done && state->pcm_queue.empty())) return;
+            pcm = std::move(state->pcm_queue.front());
+            state->pcm_queue.erase(state->pcm_queue.begin());
+        }
+        if (!send_frame(state->fd, 1, pcm.data(), (uint32_t)(pcm.size() * sizeof(float)))) {
+            std::lock_guard<std::mutex> lock(state->queue_mutex);
+            state->send_failed = true;
+            state->queue_ready.notify_one();
+            return;
+        }
+    }
+}
+
+static bool stream_failed(stream_state* state) {
+    std::lock_guard<std::mutex> lock(state->queue_mutex);
+    return state->send_failed;
+}
+
+static bool stream_available_pcm(stream_state* state, bool final) {
+    const int available = (int)state->codes.size() / kCodebooks;
+    const int stable_end = final ? available : available - kStreamLookaheadFrames;
+    if (stable_end <= state->decoded_frames ||
+        (!final && stable_end - state->decoded_frames < kStreamStepFrames)) return true;
+
+    const int window_start = std::max(0, state->decoded_frames - kStreamLookaheadFrames);
+    std::vector<float> decoded;
+    int decoded_samples = 0;
+    if (!higgs_decode(&g_model, state->codes.data() + window_start * kCodebooks,
+                      available - window_start, kCodebooks, decoded, decoded_samples)) {
+        return false;
+    }
+    const int first = (state->decoded_frames - window_start) * kSamplesPerFrame;
+    const int count = (stable_end - state->decoded_frames) * kSamplesPerFrame;
+    if (decoded_samples < first + count) {
+        return false;
+    }
+    state->pending_pcm.insert(state->pending_pcm.end(), decoded.begin() + first,
+                              decoded.begin() + first + count);
+    state->decoded_frames = stable_end;
+
+    const size_t held_samples = final ? 0 : kTrailingSilenceHoldFrames * kSamplesPerFrame;
+    if (final) higgs_trim_trailing_silence(state->pending_pcm);
+    if (state->pending_pcm.size() > held_samples) {
+        const size_t flush_samples = state->pending_pcm.size() - held_samples;
+        std::vector<float> pcm(state->pending_pcm.begin(), state->pending_pcm.begin() + flush_samples);
+        state->pending_pcm.erase(state->pending_pcm.begin(), state->pending_pcm.begin() + flush_samples);
+        return enqueue_pcm(state, std::move(pcm));
+    }
+    return true;
+}
+
+static bool on_generated_frame(const int32_t* frame, void* user) {
+    stream_state* state = (stream_state*)user;
+    if (stream_failed(state)) return false;
+    state->codes.insert(state->codes.end(), frame, frame + kCodebooks);
+    return stream_available_pcm(state, false);
+}
+
+static bool synth_one(const char* text, float temperature, SOCKET fd) {
     auto t0 = std::chrono::high_resolution_clock::now();
 
     // Tokenize target text
@@ -159,32 +291,47 @@ static bool synth_one(const char* text, float temperature, std::vector<float>& p
 
     // Backbone AR + decode (both use m->sched, must be serialised)
     std::vector<int32_t> raw_codes;
-    int T_raw = 0, T_pcm = 0;
+    int T_raw = 0;
+    stream_state stream{fd};
+    stream.writer = std::thread(stream_writer, &stream);
+    bool completed = false;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (!higgs_backbone_ar(&g_model, g_ref_codes.data(), g_T_frames,
-                                prompt_ids.data(), L_prompt,
-                                temperature, g_seed, raw_codes, T_raw)) {
+                                 prompt_ids.data(), L_prompt,
+                                  temperature, g_seed, g_max_actions, raw_codes, T_raw,
+                                  on_generated_frame, &stream)) {
             fprintf(stderr, "[higgs_server] backbone AR failed\n");
-            return false;
+            goto done;
         }
-        if (!higgs_decode(&g_model, raw_codes.data(), T_raw, 8, pcm, T_pcm)) {
-            fprintf(stderr, "[higgs_server] decode failed\n");
-            return false;
-        }
+        if (!stream_available_pcm(&stream, true)) goto done;
+        if (stream_failed(&stream)) goto done;
+        completed = stream.decoded_frames == T_raw;
     }
-
-    higgs_trim_trailing_silence(pcm);
+    if (!completed) {
+        fprintf(stderr, "[higgs_server] stream frame count mismatch\n");
+        goto done;
+    }
+done:
+    {
+        std::lock_guard<std::mutex> lock(stream.queue_mutex);
+        stream.producer_done = true;
+        stream.queue_ready.notify_one();
+    }
+    stream.writer.join();
+    if (!completed || stream_failed(&stream)) return false;
+    if (!send_frame(fd, 2, nullptr, 0)) return false;
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    fprintf(stderr, "[higgs_server] done: %d PCM samples, %.2f sec audio, %.0f ms (RTF %.3f)\n",
-            T_pcm, T_pcm / 24000.0, ms, ms / 1000.0 / (T_pcm / 24000.0));
+    fprintf(stderr, "[higgs_server] done: %d code frames, %.2f sec audio, %.0f ms\n",
+            T_raw, T_raw * kSamplesPerFrame / 24000.0, ms);
     return true;
 }
 
 // ── TCP server ──────────────────────────────────────────────────────────────
 static void handle_client(SOCKET client_fd) {
+    configure_client_socket(client_fd);
     int32_t text_len_be = 0;
     int nr = recv(client_fd, (char*)&text_len_be, 4, MSG_WAITALL);
     if (nr != 4) { closesocket(client_fd); return; }
@@ -202,17 +349,12 @@ static void handle_client(SOCKET client_fd) {
     nr = recv(client_fd, &text[0], text_len, MSG_WAITALL);
     if (nr != text_len) { closesocket(client_fd); return; }
 
-    std::vector<float> pcm;
-    if (!synth_one(text.c_str(), temperature, pcm)) {
-        int32_t err = htonl(-1);
-        send_all(client_fd, (const char*)&err, 4);
+    if (!synth_one(text.c_str(), temperature, client_fd)) {
+        const char* error = "Higgs synthesis failed";
+        send_frame(client_fd, 3, error, (uint32_t)strlen(error));
         closesocket(client_fd);
         return;
     }
-
-    int32_t ns_be = htonl((int32_t)pcm.size());
-    send_all(client_fd, (const char*)&ns_be, 4);
-    send_all(client_fd, (const char*)pcm.data(), (int)(pcm.size() * sizeof(float)));
     shutdown(client_fd, SD_SEND);
     closesocket(client_fd);
 }
@@ -293,9 +435,15 @@ int main(int argc, char** argv) {
             g_seed = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--port") && i + 1 < argc)
             g_port = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--max-actions") && i + 1 < argc)
+            g_max_actions = atoi(argv[++i]);
     }
     if (!g_model_path || !g_ref_wav) {
-        fprintf(stderr, "Usage: higgs_server --model <gguf> --ref-wav <wav> [--ref-text <str>] [--tokenizer <json>] [--temperature <f>] [--seed <n>] [--port <n>]\n");
+        fprintf(stderr, "Usage: higgs_server --model <gguf> --ref-wav <wav> [--ref-text <str>] [--tokenizer <json>] [--temperature <f>] [--seed <n>] [--port <n>] [--max-actions <n>]\n");
+        return 1;
+    }
+    if (g_max_actions < 0 || (g_max_actions > 0 && g_max_actions < kCodebooks)) {
+        fprintf(stderr, "[higgs_server] --max-actions must be 0 or at least %d\n", kCodebooks);
         return 1;
     }
 
