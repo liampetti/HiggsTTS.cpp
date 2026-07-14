@@ -39,4 +39,5 @@ bool higgs_backbone_ar(
     std::vector<int32_t> & raw_codes, // output raw codes [T_raw*8] t-major
     int            & T_raw,          // output code frames
     bool (*on_frame)(const int32_t *, void *) = nullptr,
-    void * on_frame_user = nullptr);
+    void * on_frame_user = nullptr,
+    bool * stopped_early = nullptr);

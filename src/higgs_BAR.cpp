@@ -160,14 +160,16 @@ void higgs_trim_trailing_silence(std::vector<float>& pcm, float db_threshold) {
 // ── higgs_backbone_ar ─────────────────────────────────────────────────────────
 bool higgs_backbone_ar(higgs_test_model* m, const int32_t* codes, int T_frames,
                        const int32_t* prompt_ids, int L_prompt,
-                       float temperature, int seed, int max_actions,
-                       std::vector<int32_t>& raw_codes, int& T_raw,
-                        bool (*on_frame)(const int32_t *, void *), void * on_frame_user) {
+                        float temperature, int seed, int max_actions,
+                        std::vector<int32_t>& raw_codes, int& T_raw,
+                        bool (*on_frame)(const int32_t *, void *), void * on_frame_user,
+                        bool * stopped_early) {
     if (!m || !codes || !prompt_ids || T_frames < 1 || L_prompt < 1) return false;
 
     const int N = 8, Vcb = 1026, D = 2560;
     const int hd = 128, nh = 32, nkv_h = 8;
     const float eps = 1e-6f;
+    if (stopped_early) *stopped_early = false;
     srand(seed);
 
     // Apply delay pattern
@@ -312,9 +314,8 @@ bool higgs_backbone_ar(higgs_test_model* m, const int32_t* codes, int T_frames,
                 frame[c] = all_codes[t + c][c];
             }
             if (!on_frame(frame, on_frame_user)) {
-                ggml_backend_buffer_free(kv_buf);
-                ggml_free(kv_ctx);
-                return false;
+                if (stopped_early) *stopped_early = true;
+                break;
             }
         }
         if (eoc_countdown == 0) break;

@@ -40,6 +40,7 @@
 #include <atomic>
 #include <chrono>
 #include <clocale>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -74,7 +75,8 @@ static const int kCodebooks = 8;
 static const int kSamplesPerFrame = 960;
 static const int kStreamLookaheadFrames = 16;
 static const int kStreamStepFrames = 16;
-static const int kTrailingSilenceHoldFrames = 16;
+static const int kTrailingSilenceStopSamples = 2 * 24000;
+static const float kSilenceRmsThreshold = 0.001f;
 static const size_t kMaxQueuedPcmFrames = 4;
 static const int kClientSendTimeoutMs = 2000;
 
@@ -187,13 +189,14 @@ struct stream_state {
     SOCKET fd;
     std::vector<int32_t> codes;
     int decoded_frames = 0;
-    std::vector<float> pending_pcm;
+    std::vector<float> pending_silence;
     std::vector<std::vector<float>> pcm_queue;
     std::mutex queue_mutex;
     std::condition_variable queue_ready;
     std::thread writer;
     bool producer_done = false;
     bool send_failed = false;
+    bool stopped_for_silence = false;
 };
 
 static bool enqueue_pcm(stream_state* state, std::vector<float>&& pcm) {
@@ -234,6 +237,20 @@ static bool stream_failed(stream_state* state) {
     return state->send_failed;
 }
 
+static bool is_quiet_pcm(const float* pcm, int samples) {
+    if (samples <= 0) return true;
+    double sum_squares = 0.0;
+    for (int i = 0; i < samples; i++) sum_squares += pcm[i] * pcm[i];
+    return std::sqrt(sum_squares / samples) < kSilenceRmsThreshold;
+}
+
+static bool flush_pending_silence(stream_state* state) {
+    if (state->pending_silence.empty()) return true;
+    std::vector<float> pcm;
+    pcm.swap(state->pending_silence);
+    return enqueue_pcm(state, std::move(pcm));
+}
+
 static bool stream_available_pcm(stream_state* state, bool final) {
     const int available = (int)state->codes.size() / kCodebooks;
     const int stable_end = final ? available : available - kStreamLookaheadFrames;
@@ -252,19 +269,18 @@ static bool stream_available_pcm(stream_state* state, bool final) {
     if (decoded_samples < first + count) {
         return false;
     }
-    state->pending_pcm.insert(state->pending_pcm.end(), decoded.begin() + first,
-                              decoded.begin() + first + count);
     state->decoded_frames = stable_end;
-
-    const size_t held_samples = final ? 0 : kTrailingSilenceHoldFrames * kSamplesPerFrame;
-    if (final) higgs_trim_trailing_silence(state->pending_pcm);
-    if (state->pending_pcm.size() > held_samples) {
-        const size_t flush_samples = state->pending_pcm.size() - held_samples;
-        std::vector<float> pcm(state->pending_pcm.begin(), state->pending_pcm.begin() + flush_samples);
-        state->pending_pcm.erase(state->pending_pcm.begin(), state->pending_pcm.begin() + flush_samples);
-        return enqueue_pcm(state, std::move(pcm));
+    const float* new_pcm = decoded.data() + first;
+    if (is_quiet_pcm(new_pcm, count)) {
+        state->pending_silence.insert(state->pending_silence.end(), new_pcm, new_pcm + count);
+        if (!final && (int)state->pending_silence.size() >= kTrailingSilenceStopSamples) {
+            state->stopped_for_silence = true;
+            return false;
+        }
+        return true;
     }
-    return true;
+    return flush_pending_silence(state) && enqueue_pcm(
+        state, std::vector<float>(new_pcm, new_pcm + count));
 }
 
 static bool on_generated_frame(const int32_t* frame, void* user) {
@@ -295,18 +311,19 @@ static bool synth_one(const char* text, float temperature, SOCKET fd) {
     stream_state stream{fd};
     stream.writer = std::thread(stream_writer, &stream);
     bool completed = false;
+    bool stopped_early = false;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (!higgs_backbone_ar(&g_model, g_ref_codes.data(), g_T_frames,
-                                 prompt_ids.data(), L_prompt,
+                                  prompt_ids.data(), L_prompt,
                                   temperature, g_seed, g_max_actions, raw_codes, T_raw,
-                                  on_generated_frame, &stream)) {
+                                  on_generated_frame, &stream, &stopped_early)) {
             fprintf(stderr, "[higgs_server] backbone AR failed\n");
             goto done;
         }
-        if (!stream_available_pcm(&stream, true)) goto done;
+        if (!stream.stopped_for_silence && !stream_available_pcm(&stream, true)) goto done;
         if (stream_failed(&stream)) goto done;
-        completed = stream.decoded_frames == T_raw;
+        completed = stopped_early || stream.decoded_frames == T_raw;
     }
     if (!completed) {
         fprintf(stderr, "[higgs_server] stream frame count mismatch\n");
@@ -324,8 +341,9 @@ done:
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    fprintf(stderr, "[higgs_server] done: %d code frames, %.2f sec audio, %.0f ms\n",
-            T_raw, T_raw * kSamplesPerFrame / 24000.0, ms);
+    fprintf(stderr, "[higgs_server] done: %d code frames, %.2f sec audio, %.0f ms%s\n",
+            T_raw, T_raw * kSamplesPerFrame / 24000.0, ms,
+            stream.stopped_for_silence ? " (trailing silence stopped)" : "");
     return true;
 }
 
